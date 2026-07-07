@@ -86,11 +86,38 @@ jobs:
     runs-on: self-hosted
     environment: staging
     steps:
+      - name: Sauvegarder le tag actuellement déployé
+        run: |
+          docker inspect odoo_app_staging --format='{{index .Config.Image}}' > /tmp/previous_staging_image.txt || echo "aucun déploiement précédent" > /tmp/previous_staging_image.tx
+
       - name: Déploiement staging
         run: |
           echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
           cd ~/deployments/staging
           docker compose pull
+          docker compose up -d
+
+      - name: Health check (smoke test)
+        run: |
+          echo "Attente du démarrage d'Odoo..."
+          for i in {1..15}; do
+            if curl -sf http://localhost:8070/web/login > /dev/null; then
+              echo "✅ Odoo répond correctement"
+              exit 0
+            fi
+            echo "Tentative $i/15, nouvel essai dans 5s..."
+            sleep 5
+          done
+          echo "❌ Odoo ne répond pas après 75s"
+          exit 1
+
+      - name: Rollback automatique si échec du health check
+        if: failure()
+        run: |
+          echo "Rollback vers l'image précédente..."
+          PREVIOUS_IMAGE=$(cat /tmp/previous_staging_image.txt)
+          cd ~/deployments/staging
+          sed -i "s|image:.*|image: $PREVIOUS_IMAGE|" docker-compose.yml
           docker compose up -d
 
   deploy-production:
@@ -99,12 +126,40 @@ jobs:
     runs-on: self-hosted
     environment: production
     steps:
+      - name: Sauvegarder le tag actuellement déployé
+        run: |
+          docker inspect odoo_app_prod --format='{{index .Config.Image}}' > /tmp/previous_staging_image.txt || echo "aucun déploiement précédent" > /tmp/previous_production_image.txt
+
       - name: Déploiement production
         run: |
           echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
           cd ~/deployments/production
           docker compose pull
           docker compose up -d
+
+      - name: Health check (smoke test)
+        run: |
+          echo "Attente du démarrage d'Odoo..."
+          for i in {1..15}; do
+            if curl -sf http://localhost:8071/web/login > /dev/null; then
+              echo "✅ Odoo répond correctement"
+              exit 0
+            fi
+            echo "Tentative $i/15, nouvel essai dans 5s..."
+            sleep 5
+          done
+          echo "❌ Odoo ne répond pas après 75s"
+          exit 1
+
+      - name: Rollback automatique si échec du health check
+        if: failure()
+        run: |
+          echo "Rollback vers l'image précédente..."
+          PREVIOUS_IMAGE=$(cat /tmp/previous_staging_image.txt)
+          cd ~/deployments/production
+          sed -i "s|image:.*|image: $PREVIOUS_IMAGE|" docker-compose.yml
+          docker compose up -d
+
   security-scan:
     needs: build
     runs-on: ubuntu-latest
