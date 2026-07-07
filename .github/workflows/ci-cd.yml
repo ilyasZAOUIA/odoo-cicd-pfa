@@ -126,7 +126,7 @@ jobs:
     runs-on: self-hosted
     environment: production
     steps:
-      - name: Déterminer la couleur inactive !
+      - name: Déterminer la couleur inactive
         id: color
         run: |
           if grep -q "odoo_blue" ~/deployments/production/nginx/nginx.conf; then
