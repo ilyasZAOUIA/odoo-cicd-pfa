@@ -1,5 +1,6 @@
 from odoo import models, fields, api
 
+
 class MaterielConstruction(models.Model):
     _name = 'baam.materiel'
     _description = 'Matériel de Construction'
