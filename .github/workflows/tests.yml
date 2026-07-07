@@ -1,0 +1,47 @@
+name: Odoo Tests
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+
+jobs:
+  odoo-tests:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: odoo
+          POSTGRES_PASSWORD: odoo_pwd_2026
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U odoo"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Build de l'image Odoo custom
+        run: docker build -t odoo-baam:test .
+
+      - name: Lancer les tests Odoo
+        run: |
+          docker run --rm \
+            --network=host \
+            -e HOST=localhost \
+            -e USER=odoo \
+            -e PASSWORD=odoo_pwd_2026 \
+            -v ${{ github.workspace }}/custom_addons:/mnt/extra-addons \
+            odoo-baam:test \
+            odoo --addons-path=/usr/lib/python3/dist-packages/odoo/addons,/mnt/extra-addons \
+                 --db_host=localhost --db_user=odoo --db_password=odoo_pwd_2026 \
+                 -d test_db --test-enable --test-tags /mon_module_demo \
+                 --stop-after-init -i mon_module_demo
