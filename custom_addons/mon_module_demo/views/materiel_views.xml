@@ -1,0 +1,42 @@
+<odoo>
+    <record id="view_materiel_list" model="ir.ui.view">
+        <field name="name">baam.materiel.list</field>
+        <field name="model">baam.materiel</field>
+        <field name="arch" type="xml">
+            <tree>
+                <field name="name"/>
+                <field name="reference"/>
+                <field name="quantite"/>
+                <field name="prix_unitaire"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_materiel_form" model="ir.ui.view">
+        <field name="name">baam.materiel.form</field>
+        <field name="model">baam.materiel</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <group>
+                        <field name="name"/>
+                        <field name="reference"/>
+                        <field name="quantite"/>
+                        <field name="prix_unitaire"/>
+                        <field name="fournisseur"/>
+                        <field name="date_reception"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_materiel" model="ir.actions.act_window">
+        <field name="name">Matériel Construction</field>
+        <field name="res_model">baam.materiel</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <menuitem id="menu_materiel_root" name="Matériel BAAM" sequence="10"/>
+    <menuitem id="menu_materiel_main" name="Matériel" parent="menu_materiel_root" action="action_materiel"/>
+</odoo>
