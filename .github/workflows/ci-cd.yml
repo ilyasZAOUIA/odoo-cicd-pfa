@@ -80,3 +80,28 @@ jobs:
             ghcr.io/${{ steps.lowercase.outputs.owner }}/odoo-baam:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+  deploy-staging:
+    needs: build
+    if: github.ref == 'refs/heads/staging'
+    runs-on: self-hosted
+    environment: staging
+    steps:
+      - name: Déploiement staging
+        run: |
+          echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          cd ~/deployments/staging
+          docker compose pull
+          docker compose up -d
+
+  deploy-production:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: self-hosted
+    environment: production
+    steps:
+      - name: Déploiement production
+        run: |
+          echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          cd ~/deployments/production
+          docker compose pull
+          docker compose up -d
