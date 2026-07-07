@@ -7,9 +7,9 @@ class MaterielConstruction(models.Model):
 
     name = fields.Char(string='Nom du matériel', required=True)
     reference = fields.Char(string='Référence')
-    quantite = fields.Integer(string='Quantité en stock', default=0)
+    quantite = fields.Integer(default=0)
     prix_unitaire = fields.Float(string='Prix unitaire (DH)')
-    fournisseur = fields.Char(string='Fournisseur')
+    fournisseur = fields.Char()
     date_reception = fields.Date(string='Date de réception')
 
     @api.constrains('quantite')
