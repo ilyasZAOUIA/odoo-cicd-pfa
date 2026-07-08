@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+
+    <record id="pipeline_demo_record" model="pipeline.demo">
+        <field name="name">CI/CD Works!</field>
+        <field name="description">
+            This record was created automatically after installation.
+        </field>
+    </record>
+
+</odoo>
