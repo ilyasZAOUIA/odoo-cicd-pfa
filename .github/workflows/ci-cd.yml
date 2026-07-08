@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main, staging]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -14,181 +18,282 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-lint
       - run: pip install flake8 pylint-odoo
       - run: flake8 custom_addons/mon_module_demo/
-      - run: pylint --load-plugins=pylint_odoo -d all -e odoolint --disable=manifest-required-author custom_addons/mon_module_demo/
-
-  test:
-    needs: lint
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: odoo
-          POSTGRES_PASSWORD: odoo_pwd_2026
-          POSTGRES_DB: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd="pg_isready -U odoo"
-          --health-interval=5s
-          --health-retries=10
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build image
-        run: docker build -t odoo-baam:test .
-      - name: Run tests
+      - run: pylint --load-plugins=pylint_odoo -d all -e odoolint --disable=missing-readme,manifest-required-author custom_addons/mon_module_demo/
+      - name: Notifier Discord en cas d'échec
+        if: failure()
         run: |
-          docker run --rm --network=host \
-            -e HOST=localhost -e USER=odoo -e PASSWORD=odoo_pwd_2026 \
-            -v ${{ github.workspace }}/custom_addons:/mnt/extra-addons \
-            odoo-baam:test \
-            odoo --addons-path=/usr/lib/python3/dist-packages/odoo/addons,/mnt/extra-addons \
-                 --db_host=localhost --db_user=odoo --db_password=odoo_pwd_2026 \
-                 -d test_db --test-enable --test-tags /mon_module_demo \
-                 --stop-after-init -i mon_module_demo
+          curl -H "Content-Type: application/json" -d '{
+            "embeds": [{
+              "title": "❌ Échec du pipeline — job: ${{ github.job }}",
+              "color": 15158332,
+              "fields": [
+                {"name": "Branche", "value": "${{ github.ref_name }}", "inline": true},
+                {"name": "Commit", "value": "${{ github.sha }}", "inline": true},
+                {"name": "Logs", "value": "[Voir les logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"}
+              ]
+            }]
+          }' ${{ secrets.DISCORD_WEBHOOK }}
 
-  build:
-    needs: test
+  build-image:
+    needs: lint
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    outputs:
+      image_tag: ghcr.io/${{ steps.lowercase.outputs.owner }}/odoo-baam:${{ github.sha }}
+      owner: ${{ steps.lowercase.outputs.owner }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-
-      - name: Login au GitHub Container Registry
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Convertir le nom du repo en minuscules
+      - name: Convertir en minuscules
         id: lowercase
         run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
-
-      - name: Build et push de l'image
+      - name: Build et push (une seule fois)
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: |
-            ghcr.io/${{ steps.lowercase.outputs.owner }}/odoo-baam:${{ github.sha }}
-            ghcr.io/${{ steps.lowercase.outputs.owner }}/odoo-baam:latest
+          tags: ghcr.io/${{ steps.lowercase.outputs.owner }}/odoo-baam:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-  deploy-staging:
-    needs: [build, security-scan]
-    if: github.ref == 'refs/heads/staging'
-    runs-on: self-hosted
-    environment: staging
-    steps:
-      - name: Sauvegarder le tag actuellement déployé
-        run: |
-          docker inspect odoo_app_staging --format='{{index .Config.Image}}' > /tmp/previous_staging_image.txt || echo "aucun déploiement précédent" > /tmp/previous_staging_image.tx
-
-      - name: Déploiement staging
-        run: |
-          echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          cd ~/deployments/staging
-          docker compose pull
-          docker compose up -d
-
-      - name: Health check (smoke test)
-        run: |
-          echo "Attente du démarrage d'Odoo..."
-          for i in {1..15}; do
-            if curl -sf http://localhost:8070/web/login > /dev/null; then
-              echo "✅ Odoo répond correctement"
-              exit 0
-            fi
-            echo "Tentative $i/15, nouvel essai dans 5s..."
-            sleep 5
-          done
-          echo "❌ Odoo ne répond pas après 75s"
-          exit 1
-
-      - name: Rollback automatique si échec du health check
+      - name: Notifier Discord en cas d'échec
         if: failure()
         run: |
-          echo "Rollback vers l'image précédente..."
-          PREVIOUS_IMAGE=$(cat /tmp/previous_staging_image.txt)
-          cd ~/deployments/staging
-          sed -i "s|image:.*|image: $PREVIOUS_IMAGE|" docker-compose.yml
-          docker compose up -d
-
-  deploy-production:
-    needs: [build ,security-scan]
-    if: github.ref == 'refs/heads/main'
-    runs-on: self-hosted
-    environment: production
-    steps:
-      - name: Sauvegarder le tag actuellement déployé
-        run: |
-          docker inspect odoo_app_prod --format='{{index .Config.Image}}' > /tmp/previous_staging_image.txt || echo "aucun déploiement précédent" > /tmp/previous_production_image.txt
-
-      - name: Déploiement production
-        run: |
-          echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          cd ~/deployments/production
-          docker compose pull
-          docker compose up -d
-
-      - name: Health check (smoke test)
-        run: |
-          echo "Attente du démarrage d'Odoo..."
-          for i in {1..15}; do
-            if curl -sf http://localhost:8071/web/login > /dev/null; then
-              echo "✅ Odoo répond correctement"
-              exit 0
-            fi
-            echo "Tentative $i/15, nouvel essai dans 5s..."
-            sleep 5
-          done
-          echo "❌ Odoo ne répond pas après 75s"
-          exit 1
-
-      - name: Rollback automatique si échec du health check
-        if: failure()
-        run: |
-          echo "Rollback vers l'image précédente..."
-          PREVIOUS_IMAGE=$(cat /tmp/previous_staging_image.txt)
-          cd ~/deployments/production
-          sed -i "s|image:.*|image: $PREVIOUS_IMAGE|" docker-compose.yml
-          docker compose up -d
+          curl -H "Content-Type: application/json" -d '{
+            "embeds": [{
+              "title": "❌ Échec du pipeline — job: ${{ github.job }}",
+              "color": 15158332,
+              "fields": [{"name": "Logs", "value": "[Voir les logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"}]
+            }]
+          }' ${{ secrets.DISCORD_WEBHOOK }}
 
   security-scan:
-    needs: build
+    needs: build-image
     runs-on: ubuntu-latest
     steps:
       - name: Scan de vulnérabilités avec Trivy
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ghcr.io/ilyaszaouia/odoo-baam:${{ github.sha }}
+          image-ref: ${{ needs.build-image.outputs.image_tag }}
           format: 'table'
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
-  notify-success:
-    needs: [deploy-staging, deploy-production]
-    if: always() && (needs.deploy-staging.result == 'success' || needs.deploy-production.result == 'success')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Notifier Discord (succès)
-        run: |
-          curl -H "Content-Type: application/json" \
-            -d '{"content": "✅ **Déploiement réussi** — Odoo BAAM\nBranche: ${{ github.ref_name }}\nCommit: ${{ github.sha }}\nAuteur: ${{ github.actor }}"}' \
-            ${{ secrets.DISCORD_WEBHOOK }}
 
-  notify-failure:
-    needs: [lint, test, build, security-scan, deploy-staging, deploy-production]
-    if: always() && contains(needs.*.result, 'failure')
+  test:
+    needs: build-image
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: odoo
+          POSTGRES_PASSWORD: odoo_pwd_2026
+          POSTGRES_DB: postgres
+        ports: ["5432:5432"]
+        options: --health-cmd="pg_isready -U odoo" --health-interval=5s --health-retries=10
     steps:
-      - name: Notifier Discord (échec)
+      - name: Login registre
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: Pull de l'image déjà construite
+        run: docker pull ${{ needs.build-image.outputs.image_tag }}
+      - name: Lancer les tests
         run: |
-          curl -H "Content-Type: application/json" \
-            -d '{"content": "❌ **Échec du pipeline** — Odoo BAAM\nBranche: ${{ github.ref_name }}\nVoir les logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}' \
-            ${{ secrets.DISCORD_WEBHOOK }}
+          docker run --rm --network=host \
+            -e HOST=localhost -e USER=odoo -e PASSWORD=odoo_pwd_2026 \
+            ${{ needs.build-image.outputs.image_tag }} \
+            odoo --db_host=localhost --db_user=odoo --db_password=odoo_pwd_2026 \
+                 -d test_db --test-enable --test-tags /mon_module_demo \
+                 --stop-after-init -i mon_module_demo
+      - name: Notifier Discord en cas d'échec
+        if: failure()
+        run: |
+          curl -H "Content-Type: application/json" -d '{
+            "embeds": [{
+              "title": "❌ Échec du pipeline — job: ${{ github.job }}",
+              "color": 15158332,
+              "fields": [{"name": "Logs", "value": "[Voir les logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"}]
+            }]
+          }' ${{ secrets.DISCORD_WEBHOOK }}
+
+  tag-latest:
+    needs: [test, security-scan, build-image]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Login registre
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: Promouvoir en :latest
+        run: |
+          docker pull ${{ needs.build-image.outputs.image_tag }}
+          docker tag ${{ needs.build-image.outputs.image_tag }} ghcr.io/${{ needs.build-image.outputs.owner }}/odoo-baam:latest
+          docker push ghcr.io/${{ needs.build-image.outputs.owner }}/odoo-baam:latest
+
+  deploy-staging:
+    needs: tag-latest
+    if: github.ref == 'refs/heads/staging'
+    runs-on: self-hosted
+    environment: staging
+    steps:
+      - name: Sauvegarder l'image actuellement déployée
+        run: |
+          docker inspect odoo_app_staging --format='{{index .Config.Image}}' > /tmp/previous_staging_image.txt || echo "none" > /tmp/previous_staging_image.txt
+
+      - name: Déploiement staging
+        run: |
+          echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          cd ~/deployments/staging
+          docker compose pull
+          docker compose up -d
+
+      - name: Health check
+        id: healthcheck
+        run: |
+          for i in {1..15}; do
+            if curl -sf http://localhost:8070/web/login > /dev/null; then
+              echo "✅ Odoo répond correctement"
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
+
+      - name: Rollback automatique si échec
+        if: failure() && steps.healthcheck.outcome == 'failure'
+        run: |
+          PREVIOUS_IMAGE=$(cat /tmp/previous_staging_image.txt)
+          if [ "$PREVIOUS_IMAGE" != "none" ]; then
+            cd ~/deployments/staging
+            sed -i "s|image:.*|image: $PREVIOUS_IMAGE|" docker-compose.yml
+            docker compose up -d
+          fi
+
+      - name: Notifier Discord en cas d'échec
+        if: failure()
+        run: |
+          curl -H "Content-Type: application/json" -d '{
+            "embeds": [{
+              "title": "❌ Échec déploiement staging — rollback effectué",
+              "color": 15158332,
+              "fields": [
+                {"name": "Commit", "value": "${{ github.sha }}", "inline": true},
+                {"name": "Logs", "value": "[Voir les logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"}
+              ]
+            }]
+          }' ${{ secrets.DISCORD_WEBHOOK }}
+
+      - name: Notifier Discord en cas de succès
+        if: success()
+        run: |
+          curl -H "Content-Type: application/json" -d '{
+            "embeds": [{
+              "title": "✅ Déploiement staging réussi",
+              "color": 3066993,
+              "fields": [{"name": "Commit", "value": "${{ github.sha }}", "inline": true}]
+            }]
+          }' ${{ secrets.DISCORD_WEBHOOK }}
+
+  deploy-production:
+    needs: tag-latest
+    if: github.ref == 'refs/heads/main'
+    runs-on: self-hosted
+    environment: production
+    steps:
+      - name: Déterminer la couleur active et la cible
+        id: color
+        run: |
+          if grep -q "odoo_blue" ~/deployments/production/nginx/nginx.conf; then
+            echo "target=green" >> $GITHUB_OUTPUT
+            echo "current=blue" >> $GITHUB_OUTPUT
+          else
+            echo "target=blue" >> $GITHUB_OUTPUT
+            echo "current=green" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Déployer la nouvelle version sur la couleur inactive
+        run: |
+          echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          cd ~/deployments/production
+          docker compose pull odoo_${{ steps.color.outputs.target }}
+          docker compose up -d odoo_${{ steps.color.outputs.target }}
+
+      - name: Health check sur la couleur inactive
+        id: healthcheck
+        run: |
+          for i in {1..15}; do
+            if docker exec odoo_${{ steps.color.outputs.target }} curl -sf http://localhost:8069/web/login > /dev/null; then
+              echo "✅ Nouvelle version prête"
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
+
+      - name: Générer la config nginx pour la couleur cible
+        if: steps.healthcheck.outcome == 'success'
+        run: |
+          cat > ~/deployments/production/nginx/nginx.conf << NGINXEOF
+          events {}
+          http {
+              upstream odoo_active {
+                  server odoo_${{ steps.color.outputs.target }}:8069;
+              }
+              server {
+                  listen 80;
+                  location / {
+                      proxy_pass http://odoo_active;
+                      proxy_set_header Host \$host;
+                      proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                  }
+              }
+          }
+          NGINXEOF
+
+      - name: Valider la syntaxe nginx
+        if: steps.healthcheck.outcome == 'success'
+        run: docker exec odoo_proxy nginx -t
+
+      - name: Recharger nginx (bascule du trafic)
+        if: steps.healthcheck.outcome == 'success'
+        run: docker exec odoo_proxy nginx -s reload
+
+      - name: Notifier Discord en cas d'échec
+        if: failure()
+        run: |
+          curl -H "Content-Type: application/json" -d '{
+            "embeds": [{
+              "title": "❌ Échec déploiement production — trafic non basculé",
+              "color": 15158332,
+              "fields": [
+                {"name": "Commit", "value": "${{ github.sha }}", "inline": true},
+                {"name": "Logs", "value": "[Voir les logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"}
+              ]
+            }]
+          }' ${{ secrets.DISCORD_WEBHOOK }}
+
+      - name: Notifier Discord en cas de succès
+        if: success()
+        run: |
+          curl -H "Content-Type: application/json" -d '{
+            "embeds": [{
+              "title": "✅ Déploiement production réussi (blue-green)",
+              "color": 3066993,
+              "fields": [
+                {"name": "Nouvelle couleur active", "value": "${{ steps.color.outputs.target }}", "inline": true},
+                {"name": "Commit", "value": "${{ github.sha }}", "inline": true}
+              ]
+            }]
+          }' ${{ secrets.DISCORD_WEBHOOK }}

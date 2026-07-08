@@ -2,5 +2,5 @@
 max-line-length = 120
 exclude = .git,__pycache__,*.pot
 ignore = E501,W503
-per-file-ignores = 
+per-file-ignores =
     __init__.py:F401
