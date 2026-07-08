@@ -12,11 +12,15 @@ class MaterielConstruction(models.Model):
     fournisseur = fields.Char()
     date_reception = fields.Date()
     valeur_stock = fields.Float(compute='_compute_valeur_stock', store=True)
-    categorie = fields.Selection([
+
+    categorie = fields.Selection(
+        [
     ('gros_oeuvre', 'Gros œuvre'),
     ('second_oeuvre', 'Second œuvre'),
     ('finition', 'Finition'),
-    ], string='Catégorie', default='gros_oeuvre')
+        ],
+        string='Catégorie',
+        default='gros_oeuvre')
 
     @api.depends('quantite', 'prix_unitaire')
     def _compute_valeur_stock(self):
