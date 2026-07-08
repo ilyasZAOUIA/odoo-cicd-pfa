@@ -1,6 +1,6 @@
 {
     'name': 'Gestion Matériel Construction',
-    'version': '17.0.1.0.0',
+    'version': '17.0.1.1.0',
     'category': 'Inventory',
     'license': 'LGPL-3',
     'author': 'Ilyas, BAAM',

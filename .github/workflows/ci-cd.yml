@@ -169,17 +169,29 @@ jobs:
             fi
             sleep 5
           done
-          exit 1
+          exit
 
-      - name: Rollback automatique si échec
+      - name: Rollback complet si échec (image + base de données)
         if: failure() && steps.healthcheck.outcome == 'failure'
         run: |
+          echo "🔴 Échec détecté, rollback en cours..."
+
+          # 1. Revenir à l'ancienne image
           PREVIOUS_IMAGE=$(cat /tmp/previous_staging_image.txt)
           if [ "$PREVIOUS_IMAGE" != "none" ]; then
             cd ~/deployments/staging
             sed -i "s|image:.*|image: $PREVIOUS_IMAGE|" docker-compose.yml
-            docker compose up -d
           fi
+
+          # 2. Restaurer la base de données depuis le backup pris avant déploiement
+          docker compose stop odoo
+          docker cp ~/backups/staging/${BACKUP_FILE} odoo_db_staging:/tmp/restore.dump
+          docker exec odoo_db_staging pg_restore -U odoo -d postgres --clean --if-exists /tmp/restore.dump
+
+          # 3. Redémarrer avec l'ancienne image + la DB restaurée
+          docker compose up -d
+
+          echo "✅ Rollback terminé : image et base de données restaurées"
 
       - name: Notifier Discord en cas d'échec
         if: failure()
@@ -205,6 +217,15 @@ jobs:
               "fields": [{"name": "Commit", "value": "${{ github.sha }}", "inline": true}]
             }]
           }' ${{ secrets.DISCORD_WEBHOOK }}
+
+      - name: Backup PostgreSQL avant déploiement
+        run: |
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          docker exec odoo_db_staging pg_dump -U odoo -d postgres -F c -f /tmp/backup.dump
+          docker cp odoo_db_staging:/tmp/backup.dump ~/backups/staging/backup_${TIMESTAMP}.dump
+          echo "BACKUP_FILE=backup_${TIMESTAMP}.dump" >> $GITHUB_ENV
+          # On garde seulement les 10 derniers backups pour ne pas saturer le disque
+          ls -t ~/backups/staging/*.dump | tail -n +11 | xargs -r rm --
 
   deploy-production:
     needs: tag-latest
@@ -297,3 +318,11 @@ jobs:
               ]
             }]
           }' ${{ secrets.DISCORD_WEBHOOK }}
+      - name: Backup PostgreSQL avant déploiement
+        run: |
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          docker exec odoo_db_production pg_dump -U odoo -d postgres -F c -f /tmp/backup.dump
+          docker cp odoo_db_production:/tmp/backup.dump ~/backups/ptoduction/backup_${TIMESTAMP}.dump
+          echo "BACKUP_FILE=backup_${TIMESTAMP}.dump" >> $GITHUB_ENV
+          # On garde seulement les 10 derniers backups pour ne pas saturer le disque
+          ls -t ~/backups/production/*.dump | tail -n +11 | xargs -r rm --
