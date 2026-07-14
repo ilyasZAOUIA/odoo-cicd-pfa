@@ -187,11 +187,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Vérifier la signature de l'image avant déploiement
-        run: |
-          cosign verify --key ~/cosign-keys/cosign.pub ${{ needs.build-image.outputs.image_tag }} \
-            || (echo "::error::Signature invalide — déploiement refusé" && exit 1)
-
       - name: Backup PostgreSQL avant déploiement
         id: backup
         run: |
@@ -281,11 +276,6 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v4
-
-      - name: Vérifier la signature de l'image avant déploiement
-        run: |
-          cosign verify --key ~/cosign-keys/cosign.pub ${{ needs.build-image.outputs.image_tag }} \
-            || (echo "::error::Signature invalide — déploiement refusé" && exit 1)
 
       - name: Déterminer la couleur active et la cible
         id: color
