@@ -110,19 +110,27 @@ jobs:
     needs: build-image
     runs-on: ubuntu-latest
     steps:
-      - name: Scan de vulnérabilités avec Trivy
-
+      - name: Rapport Trivy (CRITICAL + HIGH, informatif)
         env:
           TRIVY_USERNAME: ${{ github.actor }}
           TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-
-
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ needs.build-image.outputs.image_tag }}
           format: 'table'
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
+
+      - name: Bloquer si vulnérabilité CRITICAL
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ needs.build-image.outputs.image_tag }}
+          format: 'table'
+          severity: 'CRITICAL'
+          exit-code: '1'
 
   # ============================================================
   # 4. TESTS — unitaires, intégration, sécurité (pytest Odoo)
