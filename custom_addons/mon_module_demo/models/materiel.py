@@ -1,4 +1,5 @@
 from odoo import models, fields, api
+from odoo.exceptions import ValidationError
 
 
 class MaterielConstruction(models.Model):
@@ -31,4 +32,4 @@ class MaterielConstruction(models.Model):
     def _check_quantite(self):
         for rec in self:
             if rec.quantite < 0:
-                raise ValueError("La quantité ne peut pas être négative")
+                raise ValidationError("La quantité ne peut pas être négative")
