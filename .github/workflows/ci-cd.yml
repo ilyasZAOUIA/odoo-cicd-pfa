@@ -279,44 +279,8 @@ jobs:
 
       - name: Déterminer la couleur active et la cible
         id: color
-
-      - name: Déterminer la couleur inactive
-        id: color
         run: |
-          if grep -q "odoo_blue" ~/deployments/production/nginx/nginx.conf; then
-            echo "target=green" >> $GITHUB_OUTPUT
-            echo "current=blue" >> $GITHUB_OUTPUT
-          else
-            echo "target=blue" >> $GITHUB_OUTPUT
-            echo "current=green" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Déployer la nouvelle version sur la couleur inactive
-        run: |
-          echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          cd ~/deployments/production
-          docker compose pull odoo_${{ steps.color.outputs.target }}
-          docker compose up -d odoo_${{ steps.color.outputs.target }}
-
-      - name: Health check sur la couleur inactive
-        run: |
-          for i in {1..15}; do
-            if docker exec odoo_${{ steps.color.outputs.target }} curl -sf http://localhost:8069/web/login > /dev/null; then
-              echo "✅ Nouvelle version prête"
-              exit 0
-            fi
-            sleep 5
-          done
-          exit 1
-
-      - name: Basculer le trafic nginx vers la nouvelle couleur
-        run: |
-          sed -i "s/odoo_${{ steps.color.outputs.current }}/odoo_${{ steps.color.outputs.target }}/" ~/deployments/production/nginx/nginx.conf
-          docker exec odoo_proxy nginx -s reload
-          echo "Trafic basculé vers odoo_${{ steps.color.outputs.target }}"
-
-      - name: Sauvegarder le tag actuellement déployé
-        run: |
+          rm -f ~/deployments/production/nginx/nginx.conf.bak
           if grep -q "odoo_blue" ~/deployments/production/nginx/nginx.conf; then
             echo "target=green" >> $GITHUB_OUTPUT
             echo "current=blue" >> $GITHUB_OUTPUT
@@ -340,6 +304,14 @@ jobs:
           cd ~/deployments/production
           docker compose pull odoo_${{ steps.color.outputs.target }}
           docker compose up -d odoo_${{ steps.color.outputs.target }}
+          for i in {1..15}; do
+            if docker exec odoo_${{ steps.color.outputs.target }} curl -sf http://localhost:8069/web/login > /dev/null; then
+              echo "✅ Nouvelle version prête"
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
 
       - name: Appliquer la migration sur la couleur inactive
         id: migration
@@ -357,6 +329,7 @@ jobs:
       - name: Générer la config nginx pour la couleur cible
         if: steps.healthcheck.outcome == 'success'
         run: |
+          cp ~/deployments/production/nginx/nginx.conf ~/deployments/production/nginx/nginx.conf.bak
           cat > ~/deployments/production/nginx/nginx.conf << NGINXEOF
           events {}
           http {
@@ -382,13 +355,20 @@ jobs:
         if: steps.healthcheck.outcome == 'success'
         run: docker exec odoo_proxy nginx -s reload
 
-      - name: Rollback si échec (base de données uniquement — l'ancienne couleur reste active)
+      - name: Rollback si échec (base de données + config nginx — l'ancienne couleur reste active)
         if: failure() && steps.backup.outcome == 'success'
         run: |
           echo "🔴 Échec détecté sur la couleur ${{ steps.color.outputs.target }}."
+          NGINX_DIR=~/deployments/production/nginx
+          if [ -f "$NGINX_DIR/nginx.conf.bak" ]; then
+            mv "$NGINX_DIR/nginx.conf.bak" "$NGINX_DIR/nginx.conf"
+            docker exec odoo_proxy nginx -s reload || true
+          fi
           echo "Le trafic est resté sur ${{ steps.color.outputs.current }}, aucune coupure."
           docker cp ~/backups/production/${BACKUP_FILE} odoo_db_prod:/tmp/restore.dump
           docker exec odoo_db_prod pg_restore -U odoo -d postgres --clean --if-exists /tmp/restore.dump
+          cd ~/deployments/production
+          docker compose stop odoo_${{ steps.color.outputs.target }}
           echo "✅ Base de données restaurée. La couleur ${{ steps.color.outputs.target }} reste arrêtée pour investigation."
 
       - name: Notifier Discord en cas d'échec
