@@ -130,7 +130,7 @@ jobs:
         image: postgres:15-alpine
         env:
           POSTGRES_USER: odoo
-          POSTGRES_PASSWORD: odoo_pwd_2026
+          POSTGRES_PASSWORD: ${{ secrets.CI_DB_PASSWORD }}
           POSTGRES_DB: postgres
         ports: ["5432:5432"]
         options: --health-cmd="pg_isready -U odoo" --health-interval=5s --health-retries=10
@@ -142,9 +142,9 @@ jobs:
       - name: Lancer les tests (unitaires + intégration + sécurité)
         run: |
           docker run --rm --network=host \
-            -e HOST=localhost -e USER=odoo -e PASSWORD=odoo_pwd_2026 \
+            -e HOST=localhost -e USER=odoo -e PASSWORD=${{ secrets.CI_DB_PASSWORD }} \
             ${{ needs.build-image.outputs.image_tag }} \
-            odoo --db_host=localhost --db_user=odoo --db_password=odoo_pwd_2026 \
+            odoo --db_host=localhost --db_user=odoo --db_password=${{ secrets.CI_DB_PASSWORD }} \
                  -d test_db --test-enable --test-tags /mon_module_demo \
                  --stop-after-init -i mon_module_demo
 
@@ -217,6 +217,9 @@ jobs:
 
       - name: Smoke test réel (XML-RPC)
         id: healthcheck
+        env:
+          SMOKE_USER: ${{ secrets.SMOKE_USER }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
         run: python3 scripts/smoke_test.py http://localhost:8070 demo
 
       - name: Test de charge léger
@@ -322,9 +325,12 @@ jobs:
 
       - name: Smoke test réel (XML-RPC) sur la couleur inactive
         id: healthcheck
+        env:
+          SMOKE_USER: ${{ secrets.SMOKE_USER }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
         run: |
           docker cp scripts/smoke_test.py odoo_${{ steps.color.outputs.target }}:/tmp/smoke_test.py
-          docker exec odoo_${{ steps.color.outputs.target }} python3 /tmp/smoke_test.py http://localhost:8069 demo
+          docker exec -e SMOKE_USER -e SMOKE_PASSWORD odoo_${{ steps.color.outputs.target }} python3 /tmp/smoke_test.py http://localhost:8069 demo
 
       - name: Générer la config nginx pour la couleur cible
         if: steps.healthcheck.outcome == 'success'
