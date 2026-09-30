@@ -75,7 +75,10 @@ jobs:
       - name: Convertir en minuscules
         id: lowercase
         run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+      - name: Installer Cosign
+        uses: sigstore/cosign-installer@v3
       - name: Build et push (une seule fois)
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -83,6 +86,11 @@ jobs:
           tags: ghcr.io/${{ steps.lowercase.outputs.owner }}/odoo-baam:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Signer l'image (cosign)
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: cosign sign --yes --key env://COSIGN_PRIVATE_KEY ghcr.io/${{ steps.lowercase.outputs.owner }}/odoo-baam@${{ steps.build.outputs.digest }}
 
       - name: Notifier Discord en cas d'échec
         if: failure()
@@ -94,9 +102,6 @@ jobs:
               "fields": [{"name": "Logs", "value": "[Voir les logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"}]
             }]
           }' "${{ secrets.DISCORD_WEBHOOK }}"
-
-      - name: Installer Cosign
-        uses: sigstore/cosign-installer@v3
 
   # ============================================================
   # 3. SECURITY SCAN — Trivy analyse l'image buildée
