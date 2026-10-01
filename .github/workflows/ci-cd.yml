@@ -29,7 +29,7 @@ jobs:
           key: ${{ runner.os }}-pip-lint
       - run: pip install flake8 pylint-odoo
       - run: flake8 custom_addons/mon_module_demo/
-      - run: pylint --load-plugins=pylint_odoo -d all -e odoolint --disable=missing-readme,manifest-required-author custom_addons/mon_module_demo/
+      - run: pylint --load-plugins=pylint_odoo --valid-odoo-versions=17.0 -d all -e odoolint --disable=missing-readme,manifest-required-author custom_addons/mon_module_demo/
 
       - name: Notifier Discord en cas d'échec
         if: failure()
