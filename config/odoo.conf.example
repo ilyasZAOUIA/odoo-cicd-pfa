@@ -1,0 +1,13 @@
+; Copier ce fichier en config/odoo.conf (ignoré par git) et remplacer les valeurs CHANGE_ME.
+; Avec l'image officielle odoo, les variables d'environnement HOST, USER et PASSWORD
+; (cf. docker-compose.yml / .env) sont passées en --db_host/--db_user/--db_password
+; et prennent le pas sur les valeurs db_* ci-dessous.
+[options]
+addons_path = /mnt/extra-addons
+data_dir = /var/lib/odoo
+admin_passwd = CHANGE_ME
+db_host = db
+db_port = 5432
+db_user = odoo
+db_password = CHANGE_ME
+proxy_mode = True

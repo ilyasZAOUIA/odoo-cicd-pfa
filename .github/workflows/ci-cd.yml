@@ -29,7 +29,7 @@ jobs:
           key: ${{ runner.os }}-pip-lint
       - run: pip install flake8 pylint-odoo
       - run: flake8 custom_addons/mon_module_demo/
-      - run: pylint --load-plugins=pylint_odoo -d all -e odoolint --disable=missing-readme,manifest-required-author custom_addons/mon_module_demo/
+      - run: pylint --load-plugins=pylint_odoo --valid-odoo-versions=17.0 -d all -e odoolint --disable=missing-readme,manifest-required-author custom_addons/mon_module_demo/
 
       - name: Notifier Discord en cas d'échec
         if: failure()
@@ -75,7 +75,10 @@ jobs:
       - name: Convertir en minuscules
         id: lowercase
         run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+      - name: Installer Cosign
+        uses: sigstore/cosign-installer@v3
       - name: Build et push (une seule fois)
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -83,6 +86,11 @@ jobs:
           tags: ghcr.io/${{ steps.lowercase.outputs.owner }}/odoo-baam:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Signer l'image (cosign)
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: cosign sign --yes --key env://COSIGN_PRIVATE_KEY ghcr.io/${{ steps.lowercase.outputs.owner }}/odoo-baam@${{ steps.build.outputs.digest }}
 
       - name: Notifier Discord en cas d'échec
         if: failure()
@@ -95,9 +103,6 @@ jobs:
             }]
           }' "${{ secrets.DISCORD_WEBHOOK }}"
 
-      - name: Installer Cosign
-        uses: sigstore/cosign-installer@v3
-
   # ============================================================
   # 3. SECURITY SCAN — Trivy analyse l'image buildée
   # ============================================================
@@ -105,19 +110,27 @@ jobs:
     needs: build-image
     runs-on: ubuntu-latest
     steps:
-      - name: Scan de vulnérabilités avec Trivy
-
+      - name: Rapport Trivy (CRITICAL + HIGH, informatif)
         env:
           TRIVY_USERNAME: ${{ github.actor }}
           TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-
-
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ needs.build-image.outputs.image_tag }}
           format: 'table'
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
+
+      - name: Bloquer si vulnérabilité CRITICAL
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ needs.build-image.outputs.image_tag }}
+          format: 'table'
+          severity: 'CRITICAL'
+          exit-code: '1'
 
   # ============================================================
   # 4. TESTS — unitaires, intégration, sécurité (pytest Odoo)
@@ -130,7 +143,7 @@ jobs:
         image: postgres:15-alpine
         env:
           POSTGRES_USER: odoo
-          POSTGRES_PASSWORD: odoo_pwd_2026
+          POSTGRES_PASSWORD: ${{ secrets.CI_DB_PASSWORD }}
           POSTGRES_DB: postgres
         ports: ["5432:5432"]
         options: --health-cmd="pg_isready -U odoo" --health-interval=5s --health-retries=10
@@ -142,9 +155,9 @@ jobs:
       - name: Lancer les tests (unitaires + intégration + sécurité)
         run: |
           docker run --rm --network=host \
-            -e HOST=localhost -e USER=odoo -e PASSWORD=odoo_pwd_2026 \
+            -e HOST=localhost -e USER=odoo -e PASSWORD=${{ secrets.CI_DB_PASSWORD }} \
             ${{ needs.build-image.outputs.image_tag }} \
-            odoo --db_host=localhost --db_user=odoo --db_password=odoo_pwd_2026 \
+            odoo --db_host=localhost --db_user=odoo --db_password=${{ secrets.CI_DB_PASSWORD }} \
                  -d test_db --test-enable --test-tags /mon_module_demo \
                  --stop-after-init -i mon_module_demo
 
@@ -217,6 +230,9 @@ jobs:
 
       - name: Smoke test réel (XML-RPC)
         id: healthcheck
+        env:
+          SMOKE_USER: ${{ secrets.SMOKE_USER }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
         run: python3 scripts/smoke_test.py http://localhost:8070 demo
 
       - name: Test de charge léger
@@ -279,44 +295,8 @@ jobs:
 
       - name: Déterminer la couleur active et la cible
         id: color
-
-      - name: Déterminer la couleur inactive
-        id: color
         run: |
-          if grep -q "odoo_blue" ~/deployments/production/nginx/nginx.conf; then
-            echo "target=green" >> $GITHUB_OUTPUT
-            echo "current=blue" >> $GITHUB_OUTPUT
-          else
-            echo "target=blue" >> $GITHUB_OUTPUT
-            echo "current=green" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Déployer la nouvelle version sur la couleur inactive
-        run: |
-          echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          cd ~/deployments/production
-          docker compose pull odoo_${{ steps.color.outputs.target }}
-          docker compose up -d odoo_${{ steps.color.outputs.target }}
-
-      - name: Health check sur la couleur inactive
-        run: |
-          for i in {1..15}; do
-            if docker exec odoo_${{ steps.color.outputs.target }} curl -sf http://localhost:8069/web/login > /dev/null; then
-              echo "✅ Nouvelle version prête"
-              exit 0
-            fi
-            sleep 5
-          done
-          exit 1
-
-      - name: Basculer le trafic nginx vers la nouvelle couleur
-        run: |
-          sed -i "s/odoo_${{ steps.color.outputs.current }}/odoo_${{ steps.color.outputs.target }}/" ~/deployments/production/nginx/nginx.conf
-          docker exec odoo_proxy nginx -s reload
-          echo "Trafic basculé vers odoo_${{ steps.color.outputs.target }}"
-
-      - name: Sauvegarder le tag actuellement déployé
-        run: |
+          rm -f ~/deployments/production/nginx/nginx.conf.bak
           if grep -q "odoo_blue" ~/deployments/production/nginx/nginx.conf; then
             echo "target=green" >> $GITHUB_OUTPUT
             echo "current=blue" >> $GITHUB_OUTPUT
@@ -340,6 +320,14 @@ jobs:
           cd ~/deployments/production
           docker compose pull odoo_${{ steps.color.outputs.target }}
           docker compose up -d odoo_${{ steps.color.outputs.target }}
+          for i in {1..15}; do
+            if docker exec odoo_${{ steps.color.outputs.target }} curl -sf http://localhost:8069/web/login > /dev/null; then
+              echo "✅ Nouvelle version prête"
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
 
       - name: Appliquer la migration sur la couleur inactive
         id: migration
@@ -350,13 +338,17 @@ jobs:
 
       - name: Smoke test réel (XML-RPC) sur la couleur inactive
         id: healthcheck
+        env:
+          SMOKE_USER: ${{ secrets.SMOKE_USER }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
         run: |
           docker cp scripts/smoke_test.py odoo_${{ steps.color.outputs.target }}:/tmp/smoke_test.py
-          docker exec odoo_${{ steps.color.outputs.target }} python3 /tmp/smoke_test.py http://localhost:8069 demo
+          docker exec -e SMOKE_USER -e SMOKE_PASSWORD odoo_${{ steps.color.outputs.target }} python3 /tmp/smoke_test.py http://localhost:8069 demo
 
       - name: Générer la config nginx pour la couleur cible
         if: steps.healthcheck.outcome == 'success'
         run: |
+          cp ~/deployments/production/nginx/nginx.conf ~/deployments/production/nginx/nginx.conf.bak
           cat > ~/deployments/production/nginx/nginx.conf << NGINXEOF
           events {}
           http {
@@ -382,13 +374,20 @@ jobs:
         if: steps.healthcheck.outcome == 'success'
         run: docker exec odoo_proxy nginx -s reload
 
-      - name: Rollback si échec (base de données uniquement — l'ancienne couleur reste active)
+      - name: Rollback si échec (base de données + config nginx — l'ancienne couleur reste active)
         if: failure() && steps.backup.outcome == 'success'
         run: |
           echo "🔴 Échec détecté sur la couleur ${{ steps.color.outputs.target }}."
+          NGINX_DIR=~/deployments/production/nginx
+          if [ -f "$NGINX_DIR/nginx.conf.bak" ]; then
+            mv "$NGINX_DIR/nginx.conf.bak" "$NGINX_DIR/nginx.conf"
+            docker exec odoo_proxy nginx -s reload || true
+          fi
           echo "Le trafic est resté sur ${{ steps.color.outputs.current }}, aucune coupure."
           docker cp ~/backups/production/${BACKUP_FILE} odoo_db_prod:/tmp/restore.dump
           docker exec odoo_db_prod pg_restore -U odoo -d postgres --clean --if-exists /tmp/restore.dump
+          cd ~/deployments/production
+          docker compose stop odoo_${{ steps.color.outputs.target }}
           echo "✅ Base de données restaurée. La couleur ${{ steps.color.outputs.target }} reste arrêtée pour investigation."
 
       - name: Notifier Discord en cas d'échec

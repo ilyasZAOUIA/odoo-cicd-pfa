@@ -1,5 +1,6 @@
 from odoo.tests.common import TransactionCase
 from odoo.tests import tagged
+from odoo.exceptions import ValidationError
 
 
 @tagged('post_install', '-at_install')
@@ -19,7 +20,7 @@ class TestMateriel(TransactionCase):
 
     def test_quantite_negative_interdite(self):
         """Vérifie que la contrainte anti-négatif fonctionne"""
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValidationError):
             self.env['baam.materiel'].create({
                 'name': 'Test',
                 'quantite': -5,

@@ -1,10 +1,15 @@
+import os
 import xmlrpc.client
 import sys
 
 URL = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8069"
 DB = sys.argv[2] if len(sys.argv) > 2 else "demo"
-USER = "staging@gmail.com"
-PASSWORD = "staging"
+USER = os.environ.get("SMOKE_USER")
+PASSWORD = os.environ.get("SMOKE_PASSWORD")
+
+if not USER or not PASSWORD:
+    print("ÉCHEC: variables d'environnement SMOKE_USER et SMOKE_PASSWORD requises")
+    sys.exit(1)
 
 try:
     common = xmlrpc.client.ServerProxy(f'{URL}/xmlrpc/2/common')
